@@ -1,14 +1,14 @@
 import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.applications.efficientnet import preprocess_input
-from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 import numpy as np
 from PIL import Image
 from tensorflow.keras.layers import Layer, Conv2D, concatenate
 import cv2
 import requests
 
-# ---------- CUSTOM LAYER (your fire_module) ----------
+# ---------- CUSTOM LAYER ----------
 class fire_module(Layer):
     def __init__(self, squeeze, expand, **kwargs):
         super().__init__(**kwargs)
@@ -27,13 +27,11 @@ class fire_module(Layer):
         config.update({'squeeze': self.squeeze, 'expand': self.expand})
         return config
 
-# ---------- PREPROCESSING FUNCTIONS (EXACTLY AS IN YOUR COLAB) ----------
+# ---------- PREPROCESSING (EXACT MATCH TO COLAB) ----------
 def reduce_noise(image):
-    """Bilateral filter for noise reduction (same as training)"""
     return cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
 
 def extract_roi(image, roi_size=160):
-    """Extract central region of size roi_size x roi_size"""
     h, w, _ = image.shape
     cx, cy = w // 2, h // 2
     half = roi_size // 2
@@ -43,7 +41,29 @@ def extract_roi(image, roi_size=160):
     roi = reduce_noise(roi)
     return roi
 
-# ---------- LOAD MODEL FROM HUGGING FACE ----------
+def preprocess_image(uploaded_file):
+    # Step 1: Load image as RGB and resize to 224x224 (same as training)
+    img = Image.open(uploaded_file).convert('RGB')
+    img = img.resize((224, 224))
+    img_np = np.array(img).astype(np.uint8)   # shape (224,224,3)
+
+    # Step 2: Extract central 160x160 ROI
+    roi = extract_roi(img_np, roi_size=160)
+
+    # Step 3: Resize ROI back to 224x224 (same as training)
+    roi_resized = cv2.resize(roi, (224, 224))
+
+    # Step 4: Apply EfficientNet preprocessing
+    roi_resized = preprocess_input(roi_resized.astype(np.float32))
+
+    # Step 5: Add batch dimension
+    roi_batch = np.expand_dims(roi_resized, axis=0)
+
+    # Also return the ROI image for display (after resizing to 224x224)
+    roi_display = Image.fromarray(roi_resized.astype(np.uint8))
+    return roi_batch, roi_display
+
+# ---------- LOAD MODEL ----------
 @st.cache_resource
 def load_model():
     url = "https://huggingface.co/spaces/M-Parames01/thermal-defect-model/resolve/main/fusion_resume_model_1.keras?download=true"
@@ -63,38 +83,24 @@ st.markdown("Upload a thermal image to classify as **No Defect**, **Minor Defect
 uploaded_file = st.file_uploader("Choose a thermal image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # 1. Load original image (RGB)
+    # Display original image
     original = Image.open(uploaded_file).convert('RGB')
     st.image(original, caption="📸 Original Image", width=300)
 
-    # 2. Convert to numpy array for OpenCV processing
-    img_np = np.array(original)
+    # Preprocess
+    roi_batch, roi_display = preprocess_image(uploaded_file)
 
-    # 3. Apply ROI extraction + noise reduction
-    roi = extract_roi(img_np, roi_size=160)
+    # Display preprocessed image (what the model actually sees)
+    st.image(roi_display, caption="🛠 Preprocessed Image (Resize → Crop → Noise Reduction → Resize)", width=300)
 
-    # 4. Resize to 224x224 (model input size)
-    roi_resized = cv2.resize(roi, (224, 224))
-
-    # 5. Display preprocessed image (for user transparency)
-    preprocessed_pil = Image.fromarray(roi_resized)
-    st.image(preprocessed_pil, caption="🛠 Preprocessed Image (ROI + Noise Reduction)", width=300)
-
-    # 6. Prepare for model: convert to array, apply EfficientNet scaling
-    img_array = img_to_array(preprocessed_pil)        # shape (224,224,3)
-    img_array = preprocess_input(img_array)           # scale to [-1, 1] (EfficientNet)
-    img_array = np.expand_dims(img_array, axis=0)     # add batch dimension
-
-    # 7. Predict
-    pred = model.predict(img_array)
+    # Predict
+    pred = model.predict(roi_batch)
     pred_class = CLASS_NAMES[np.argmax(pred[0])]
     confidence = np.max(pred[0])
 
-    # 8. Show results
     st.success(f"**Prediction:** {pred_class}")
     st.metric("Confidence", f"{confidence:.2%}")
 
-    # Optional: Show probability bar chart
+    # Optional: bar chart
     prob_dict = {CLASS_NAMES[i]: float(pred[0][i]) for i in range(len(CLASS_NAMES))}
     st.bar_chart(prob_dict)
-    
