@@ -1,7 +1,6 @@
 import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.applications.efficientnet import preprocess_input
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
 import numpy as np
 from PIL import Image
 from tensorflow.keras.layers import Layer, Conv2D, concatenate
@@ -42,26 +41,37 @@ def extract_roi(image, roi_size=160):
     return roi
 
 def preprocess_image(uploaded_file):
-    # Step 1: Load image as RGB and resize to 224x224 (same as training)
+    # 1. Load, resize to 224x224
     img = Image.open(uploaded_file).convert('RGB')
     img = img.resize((224, 224))
-    img_np = np.array(img).astype(np.uint8)   # shape (224,224,3)
+    img_np = np.array(img).astype(np.uint8)
 
-    # Step 2: Extract central 160x160 ROI
+    # 2. ROI extraction & resize back to 224x224
     roi = extract_roi(img_np, roi_size=160)
-
-    # Step 3: Resize ROI back to 224x224 (same as training)
     roi_resized = cv2.resize(roi, (224, 224))
 
-    # Step 4: Apply EfficientNet preprocessing
-    roi_resized = preprocess_input(roi_resized.astype(np.float32))
+    # 3. First preprocess_input
+    x = preprocess_input(roi_resized.astype(np.float32))
 
-    # Step 5: Add batch dimension
-    roi_batch = np.expand_dims(roi_resized, axis=0)
+    # 4. Per‑image min‑max normalization to [0,1]
+    x_min, x_max = x.min(), x.max()
+    if x_max - x_min > 1e-8:
+        x_norm = (x - x_min) / (x_max - x_min)
+    else:
+        x_norm = x - x_min
 
-    # Also return the ROI image for display (after resizing to 224x224)
-    roi_display = Image.fromarray(roi_resized.astype(np.uint8))
-    return roi_batch, roi_display
+    # 5. Scale to 0‑255 and convert to uint8
+    x_uint8 = (x_norm * 255).astype(np.uint8)
+
+    # 6. Second preprocess_input
+    x_final = preprocess_input(x_uint8.astype(np.float32))
+
+    # 7. Batch dimension
+    x_batch = np.expand_dims(x_final, axis=0)
+
+    # For display (optional)
+    roi_display = Image.fromarray(roi_resized)
+    return x_batch, roi_display
 
 # ---------- LOAD MODEL ----------
 @st.cache_resource
@@ -70,7 +80,11 @@ def load_model():
     response = requests.get(url)
     with open("fusion_resume_model_1.keras", "wb") as f:
         f.write(response.content)
-    model = tf.keras.models.load_model("fusion_resume_model_1.keras", custom_objects={'fire_module': fire_module}, compile=False)
+    model = tf.keras.models.load_model(
+        "fusion_resume_model_1.keras",
+        custom_objects={'fire_module': fire_module},
+        compile=False
+    )
     return model
 
 model = load_model()
@@ -83,17 +97,12 @@ st.markdown("Upload a thermal image to classify as **No Defect**, **Minor Defect
 uploaded_file = st.file_uploader("Choose a thermal image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # Display original image
     original = Image.open(uploaded_file).convert('RGB')
     st.image(original, caption="📸 Original Image", width=300)
 
-    # Preprocess
     roi_batch, roi_display = preprocess_image(uploaded_file)
+    st.image(roi_display, caption="🛠 ROI (after crop & resize)", width=300)
 
-    # Display preprocessed image (what the model actually sees)
-    st.image(roi_display, caption="🛠 Preprocessed Image (Resize → Crop → Noise Reduction → Resize)", width=300)
-
-    # Predict
     pred = model.predict(roi_batch)
     pred_class = CLASS_NAMES[np.argmax(pred[0])]
     confidence = np.max(pred[0])
@@ -101,6 +110,5 @@ if uploaded_file is not None:
     st.success(f"**Prediction:** {pred_class}")
     st.metric("Confidence", f"{confidence:.2%}")
 
-    # Optional: bar chart
     prob_dict = {CLASS_NAMES[i]: float(pred[0][i]) for i in range(len(CLASS_NAMES))}
     st.bar_chart(prob_dict)
