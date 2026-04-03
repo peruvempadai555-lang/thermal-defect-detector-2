@@ -78,7 +78,7 @@ def load_model():
 model = load_model()
 CLASS_NAMES = ['Major_Defect', 'Minor_Defect', 'No_Defect']
 
-st.title("🔥 Thermal Image Defect Detection")
+st.title("🔥 Thermal Fruit Image Defect Detection")
 uploaded_file = st.file_uploader("Choose a thermal image...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
